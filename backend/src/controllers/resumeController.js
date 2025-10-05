@@ -86,6 +86,7 @@ export const uploadResumes = async (req, res) => {
         fileUrl: file.path.replace(/\\/g, "/"),
         rawText,
         embedding,
+        uploadedBy: req.user?._id,
       });
 
       await resume.save();

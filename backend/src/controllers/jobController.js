@@ -43,26 +43,79 @@ export const matchJob = async (req, res) => {
       }
     }
 
-    // Fetch all resumes
-    const resumes = await Resume.find();
+    // Fetch only resumes uploaded by the current user
+    const resumes = await Resume.find({ uploadedBy: req.user._id });
+    console.log(`Found ${resumes.length} resumes for user ${req.user._id}`);
 
-    // Compute similarity
-    const jobTokens = jobDescription.toLowerCase().split(/\s+/).filter(Boolean);
-    const keywordScore = (r) => {
-      const hay = `${r.name} ${r.skills.join(" ")} ${r.summary} ${r.rawText}`.toLowerCase();
-      let matches = 0;
-      for (const t of jobTokens) if (hay.includes(t)) matches++;
-      return matches / Math.max(jobTokens.length, 1);
+    // Enhanced keyword scoring
+    const jobTokens = jobDescription.toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter(token => token.length > 2); // Filter out short words
+    
+    const calculateKeywordScore = (resume) => {
+      const candidateText = `${resume.name || ''} ${resume.email || ''} ${(resume.skills || []).join(" ")} ${resume.summary || ''} ${resume.rawText || ''}`.toLowerCase();
+      
+      let totalScore = 0;
+      let skillMatches = 0;
+      
+      // Check for skill matches (higher weight)
+      if (resume.skills && Array.isArray(resume.skills)) {
+        for (const skill of resume.skills) {
+          const skillLower = skill.toLowerCase();
+          for (const token of jobTokens) {
+            if (skillLower.includes(token) || token.includes(skillLower)) {
+              skillMatches += 2; // Skills get double weight
+            }
+          }
+        }
+      }
+      
+      // Check for general keyword matches
+      let generalMatches = 0;
+      for (const token of jobTokens) {
+        if (candidateText.includes(token)) {
+          generalMatches += 1;
+        }
+      }
+      
+      totalScore = skillMatches + generalMatches;
+      const maxPossibleScore = (resume.skills?.length || 0) * 2 + jobTokens.length;
+      
+      return maxPossibleScore > 0 ? Math.min(totalScore / maxPossibleScore, 1) : 0;
     };
+
     const matches = resumes
-      .map((r) => ({
-        resume: r,
-        score: jobEmbedding && Array.isArray(r.embedding) && r.embedding.length > 0
-          ? cosineSimilarity(jobEmbedding, r.embedding)
-          : keywordScore(r),
-      }))
+      .map((r) => {
+        let score = 0;
+        
+        // Try AI embedding first if available
+        if (jobEmbedding && Array.isArray(r.embedding) && r.embedding.length > 0) {
+          const cosineScore = cosineSimilarity(jobEmbedding, r.embedding);
+          score = Math.max(cosineScore, 0); // Ensure non-negative
+        }
+        
+        // If AI score is too low or unavailable, use keyword scoring
+        if (score < 0.1) {
+          score = calculateKeywordScore(r);
+        }
+        
+        // Ensure minimum score for any resume with relevant content
+        if (score === 0 && (r.skills?.length > 0 || r.summary || r.rawText)) {
+          score = 0.1; // Minimum 10% for any resume with content
+        }
+        
+        return {
+          resume: r,
+          score: score
+        };
+      })
+      .filter(m => m.score > 0) // Only include resumes with some relevance
       .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
+      .slice(0, 5); // Show up to 5 matches
+    
+    console.log(`Job tokens: ${jobTokens.slice(0, 10).join(', ')}...`);
+    console.log(`Found ${matches.length} matches with scores:`, matches.map(m => ({ email: m.resume.email, score: m.score })));
 
     // Generate reasoning using Gemini for each top candidate
     const results = [];
@@ -83,9 +136,12 @@ export const matchJob = async (req, res) => {
         }
       }
 
+      // Ensure score is meaningful (at least 1% if there's any match)
+      const displayScore = Math.max(m.score * 100, m.score > 0 ? 1 : 0);
+      
       results.push({
         candidate: m.resume,
-        score: (m.score * 100).toFixed(2),
+        score: displayScore.toFixed(1),
         reasoning: reasoningResponse.experience_summary || reasoningResponse.summary || "Good fit based on skills and experience",
       });
     }

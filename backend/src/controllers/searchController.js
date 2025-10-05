@@ -41,34 +41,95 @@ export const searchResumes = async (req, res) => {
       }
     }
 
-    const resumes = await Resume.find();
-    const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+    // Fetch only resumes uploaded by the current user
+    const resumes = await Resume.find({ uploadedBy: req.user._id });
+    console.log(`Found ${resumes.length} resumes for search by user ${req.user._id}`);
+
+    // Enhanced keyword processing
+    const tokens = query.toLowerCase()
+      .split(/[,\s]+/) // Split by commas and spaces
+      .filter(Boolean)
+      .filter(token => token.length > 1); // Filter out single characters
+    
+    console.log(`Search tokens: ${tokens.join(', ')}`);
+
     const computeKeywordScore = (r) => {
-      const hay = `${r.name} ${r.skills.join(" ")} ${r.summary} ${r.rawText}`.toLowerCase();
-      let matches = 0;
-      for (const t of tokens) if (hay.includes(t)) matches++;
-      return matches / Math.max(tokens.length, 1);
+      const candidateText = `${r.name || ''} ${r.email || ''} ${(r.skills || []).join(" ")} ${r.summary || ''} ${r.rawText || ''}`.toLowerCase();
+      
+      let totalScore = 0;
+      let skillMatches = 0;
+      
+      // Check for skill matches (higher weight)
+      if (r.skills && Array.isArray(r.skills)) {
+        for (const skill of r.skills) {
+          const skillLower = skill.toLowerCase();
+          for (const token of tokens) {
+            if (skillLower.includes(token) || token.includes(skillLower)) {
+              skillMatches += 2; // Skills get double weight
+            }
+          }
+        }
+      }
+      
+      // Check for general keyword matches
+      let generalMatches = 0;
+      for (const token of tokens) {
+        if (candidateText.includes(token)) {
+          generalMatches += 1;
+        }
+      }
+      
+      totalScore = skillMatches + generalMatches;
+      const maxPossibleScore = (r.skills?.length || 0) * 2 + tokens.length;
+      
+      return maxPossibleScore > 0 ? Math.min(totalScore / maxPossibleScore, 1) : 0;
     };
-    const eligible = resumes.filter((r) => r);
-    const results = eligible
+
+    const results = resumes
       .map((r) => {
-        const score = queryEmbedding && Array.isArray(r.embedding) && r.embedding.length > 0
-          ? cosineSimilarity(queryEmbedding, r.embedding)
-          : computeKeywordScore(r);
+        let score = 0;
+        
+        // Try AI embedding first if available
+        if (queryEmbedding && Array.isArray(r.embedding) && r.embedding.length > 0) {
+          const cosineScore = cosineSimilarity(queryEmbedding, r.embedding);
+          score = Math.max(cosineScore, 0); // Ensure non-negative
+        }
+        
+        // If AI score is too low or unavailable, use keyword scoring
+        if (score < 0.1) {
+          score = computeKeywordScore(r);
+        }
+        
+        // Ensure minimum score for any resume with relevant content
+        if (score === 0 && (r.skills?.length > 0 || r.summary || r.rawText)) {
+          score = 0.1; // Minimum 10% for any resume with content
+        }
+
+        // Generate snippet
         const snippet = r.rawText
-          .split(/\.|\n|\r/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 0)
-          .filter((s) => tokens.some((word) => s.toLowerCase().includes(word)))
-          .slice(0, 2)
-          .join(". ");
-        const display = r.name && r.name.toLowerCase() !== "unknown"
-          ? r.name
-          : [r.email, r.phone].filter(Boolean).join(" | ") || "Unknown";
-        return { resume: { ...r.toObject(), name: display }, score, snippet };
+          ? r.rawText
+              .split(/\.|\n|\r/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)
+              .filter((s) => tokens.some((word) => s.toLowerCase().includes(word)))
+              .slice(0, 2)
+              .join(". ") || "No relevant snippet"
+          : "No relevant snippet";
+
+        // Use email as display name
+        const display = r.email || "Unknown";
+
+        return { 
+          resume: { ...r.toObject(), name: display }, 
+          score: Math.max(score * 100, score > 0 ? 1 : 0).toFixed(1), 
+          snippet 
+        };
       })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
+      .filter(r => r.score > 0) // Only include resumes with some relevance
+      .sort((a, b) => parseFloat(b.score) - parseFloat(a.score))
+      .slice(0, 10); // Show up to 10 results
+
+    console.log(`Found ${results.length} search results with scores:`, results.map(r => ({ email: r.resume.email, score: r.score })));
 
     res.json({ results });
   } catch (err) {

@@ -8,6 +8,7 @@ const resumeSchema = new mongoose.Schema({
   fileUrl: String,
   rawText: String,
   embedding: [Number],
+  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
 }, { timestamps: true });
 
 export default mongoose.model("Resume", resumeSchema);
