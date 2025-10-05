@@ -1,10 +1,18 @@
 import fs from "fs";
-import pdfParse from "pdf-parse";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
 import mammoth from "mammoth";
 import Resume from "../models/resumeModel.js";
-import { getEmbedding, summarizeResume } from "../utils/gemini.js";
+import { extractSkills } from "../utils/index.js";
+let getEmbedding, summarizeResume;
+try {
+  ({ getEmbedding, summarizeResume } = await import("../utils/gemini.js"));
+} catch (e) {
+  // Defer throwing until request handling, so server can still start
+}
 
-// Helper to extract text
+//extract text
 const extractText = async (filePath, mimetype) => {
   if (mimetype === "application/pdf") {
     const dataBuffer = fs.readFileSync(filePath);
@@ -21,13 +29,13 @@ const extractText = async (filePath, mimetype) => {
   }
 };
 
-// Simple regex to extract email
+//  extract email
 const extractEmail = (text) => {
   const match = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/);
   return match ? match[0] : "";
 };
 
-// Simple regex to extract phone number
+// extract phone number
 const extractPhone = (text) => {
   const match = text.match(/\+?\d[\d\s-]{7,}\d/);
   return match ? match[0] : "";
@@ -47,15 +55,35 @@ export const uploadResumes = async (req, res) => {
       const email = extractEmail(rawText);
       const phone = extractPhone(rawText);
 
-      const summaryData = await summarizeResume(rawText);
-      const embedding = await getEmbedding(rawText);
+      // If AI isn't configured, continue with minimal data
+      let summaryData = {};
+      let embedding = [];
+      if (summarizeResume) {
+        try {
+          summaryData = await summarizeResume(rawText);
+        } catch (e) {
+          summaryData = {};
+        }
+      }
+      if (getEmbedding) {
+        try {
+          embedding = await getEmbedding(rawText);
+        } catch (e) {
+          embedding = [];
+        }
+      }
+
+      const identifiers = [email, phone].filter(Boolean).join(" | ");
+      const resolvedName = (summaryData?.name && summaryData.name.trim().length > 0)
+        ? summaryData.name
+        : (identifiers || "Unknown");
 
       const resume = new Resume({
-        name: summaryData.name || "Unknown",
-        email,
-        skills: summaryData.top_skills || [],
-        summary: summaryData.experience_summary || "",
-        fileUrl: file.path,
+        name: resolvedName,
+        email: summaryData?.email || email,
+        skills: (Array.isArray(summaryData?.top_skills) ? summaryData.top_skills : extractSkills(rawText)),
+        summary: summaryData?.experience_summary || "",
+        fileUrl: file.path.replace(/\\/g, "/"),
         rawText,
         embedding,
       });

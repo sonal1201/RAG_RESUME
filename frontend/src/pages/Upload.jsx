@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import API from "../api";
+import LogoutButton from "../components/LogoutButton.jsx";
 import { toast } from "react-hot-toast";
 
 const Upload = () => {
@@ -24,7 +25,7 @@ const Upload = () => {
       setUploading(true);
       setProgress(0);
 
-      const res = await API.post("/resumes/upload", formData, {
+      const res = await API.post("/resume/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
         onUploadProgress: (e) => {
           const percent = Math.round((e.loaded * 100) / e.total);
@@ -44,7 +45,10 @@ const Upload = () => {
 
   return (
     <div className="max-w-xl mx-auto p-4">
-      <h2 className="text-2xl font-bold mb-4">Upload Resumes</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold">Upload Resumes</h2>
+        <LogoutButton />
+      </div>
 
       <input
         type="file"

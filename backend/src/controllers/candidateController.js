@@ -1,4 +1,4 @@
-import Resume from "../models/Resume.js";
+import Resume from "../models/resumeModel.js";
 
 export const getCandidate = async (req, res) => {
   try {

@@ -1,11 +1,28 @@
-import Resume from "../models/Resume.js";
-import { getEmbedding, summarizeResume } from "../utils/gemini.js";
+import Resume from "../models/resumeModel.js";
+let getEmbedding, summarizeResume;
+try {
+  ({ getEmbedding, summarizeResume } = await import("../utils/gemini.js"));
+} catch (e) {
+  // allow server start
+}
 
-// Cosine similarity helper
+// Cosine similarity helper (safe)
 const cosineSimilarity = (vecA, vecB) => {
-  const dot = vecA.reduce((acc, val, i) => acc + val * vecB[i], 0);
-  const magA = Math.sqrt(vecA.reduce((acc, val) => acc + val * val, 0));
-  const magB = Math.sqrt(vecB.reduce((acc, val) => acc + val * val, 0));
+  if (!Array.isArray(vecA) || !Array.isArray(vecB)) return 0;
+  const n = Math.min(vecA.length, vecB.length);
+  if (n === 0) return 0;
+  let dot = 0, sumA = 0, sumB = 0;
+  for (let i = 0; i < n; i++) {
+    const a = Number(vecA[i]);
+    const b = Number(vecB[i]);
+    if (Number.isNaN(a) || Number.isNaN(b)) continue;
+    dot += a * b;
+    sumA += a * a;
+    sumB += b * b;
+  }
+  const magA = Math.sqrt(sumA);
+  const magB = Math.sqrt(sumB);
+  if (magA === 0 || magB === 0) return 0;
   return dot / (magA * magB);
 };
 
@@ -16,16 +33,33 @@ export const matchJob = async (req, res) => {
       return res.status(400).json({ error: "Job description is required" });
 
     // Embed the job description
-    const jobEmbedding = await getEmbedding(jobDescription);
+    // Try AI embedding if available; otherwise fallback to keyword scoring
+    let jobEmbedding = null;
+    if (getEmbedding) {
+      try {
+        jobEmbedding = await getEmbedding(jobDescription);
+      } catch (e) {
+        jobEmbedding = null;
+      }
+    }
 
     // Fetch all resumes
     const resumes = await Resume.find();
 
     // Compute similarity
+    const jobTokens = jobDescription.toLowerCase().split(/\s+/).filter(Boolean);
+    const keywordScore = (r) => {
+      const hay = `${r.name} ${r.skills.join(" ")} ${r.summary} ${r.rawText}`.toLowerCase();
+      let matches = 0;
+      for (const t of jobTokens) if (hay.includes(t)) matches++;
+      return matches / Math.max(jobTokens.length, 1);
+    };
     const matches = resumes
       .map((r) => ({
         resume: r,
-        score: cosineSimilarity(jobEmbedding, r.embedding),
+        score: jobEmbedding && Array.isArray(r.embedding) && r.embedding.length > 0
+          ? cosineSimilarity(jobEmbedding, r.embedding)
+          : keywordScore(r),
       }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 3);
@@ -40,7 +74,14 @@ export const matchJob = async (req, res) => {
         Job Description: ${jobDescription}
         Provide reasoning in 2-3 sentences.
       `;
-      const reasoningResponse = await summarizeResume(reasoningPrompt);
+      let reasoningResponse = {};
+      if (summarizeResume) {
+        try {
+          reasoningResponse = await summarizeResume(reasoningPrompt);
+        } catch (e) {
+          reasoningResponse = {};
+        }
+      }
 
       results.push({
         candidate: m.resume,
