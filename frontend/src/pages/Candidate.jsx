@@ -23,12 +23,26 @@ const Candidate = () => {
     fetchCandidate();
   }, [id]);
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     if (!resume) return;
-    const link = document.createElement("a");
-    link.href = resume.fileUrl;
-    link.download = resume.fileUrl.split("/").pop();
-    link.click();
+    try {
+      const { data } = await API.get(`/resume/${resume._id || resume.id}/download`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([data]);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const filename = (resume.fileUrl || "resume.pdf").split("/").pop();
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      toast.error(err.response?.data?.error || "Download failed");
+    }
   };
 
   if (loading) return <div className="p-4">Loading...</div>;
