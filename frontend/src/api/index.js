@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const baseURL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000/api";
+const baseURL = "https: //rag-resume-177e.onrender.com/api";
 const API = axios.create({ baseURL });
 
 API.interceptors.request.use((config) => {
